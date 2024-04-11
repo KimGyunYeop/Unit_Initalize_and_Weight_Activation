@@ -3,7 +3,7 @@
 This repository is experiment code of {paper_name}
 
 ## Usage
-
+Detailed hyperparameters of each experiment are found in parse_args() at utils.py 
 #### For GLEU test  
 !! experiment_name must include model name ["deberta","t5"]
 ``` 
