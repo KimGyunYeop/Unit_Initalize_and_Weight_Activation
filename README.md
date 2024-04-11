@@ -9,10 +9,10 @@ This repository is experiment code of {paper_name}
 ``` 
 python test_gleu.py \  
     --result_path {experiment_name}    
-    --glue_task {\[cola, sst2, mrpc, stsb, qqp, mnli, mnli_matched, mnli_mismatched, qnli, rte, wnli\]}  
-    --init_type {\[unit, xavier\]}  
-    --act_type {\[gelu, midgelu\]}  
-    --add_position {\[befdot, afterffnn, both\]}  
+    --glue_task {[cola, sst2, mrpc, stsb, qqp, mnli, mnli_matched, mnli_mismatched, qnli, rte, wnli]}  
+    --init_type {[unit, xavier]}  
+    --act_type {[gelu, midgelu]}  
+    --add_position {[befdot, afterffnn, both]}  
 ```
 
 if you wand testing mrpc with our proposed method and additional layer is inserted in multi-haed attention position
@@ -23,7 +23,7 @@ python test_gleu.py \
     --glue_task mrpc  
     --init_type unit  
     --act_type midgelu  
-    --add_position {\[befdot, afterffnn, both\]}  
+    --add_position befdot
 ```
 
 #### For Text Generation
@@ -32,10 +32,10 @@ python test_gleu.py \
 ``` 
 python test_generation.py \  
     --result_path {experiment_name}    
-    --generation_task {\[cnndm, wmt_en_ro\]}  
-    --init_type {\[unit, xavier\]}  
-    --act_type {\[gelu, midgelu\]}  
-    --add_position {\[befdot, afterffnn, both\]}  
+    --generation_task {[cnndm, wmt_en_ro]}  
+    --init_type {[unit, xavier]}  
+    --act_type {[gelu, midgelu]}  
+    --add_position {[befdot, afterffnn, both]}  
 ```
 
 #### For Image Classificaiton
@@ -45,7 +45,7 @@ python test_generation.py \
 python test_image_classification.py \  
     --result_path {experiment_name}    
     --image_classification_dataset {["cifar100", "imagenet-1k"]}  
-    --init_type {\[unit, xavier\]}  
-    --act_type {\[gelu, midgelu\]}  
-    --add_position {\[befdot, afterffnn, both\]}  
+    --init_type {[unit, xavier]}  
+    --act_type {[gelu, midgelu]}  
+    --add_position {[befdot, afterffnn, both]}  
 ```
