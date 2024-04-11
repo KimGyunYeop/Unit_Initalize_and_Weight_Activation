@@ -1,0 +1,13 @@
+server_envs.json
+
+wandb/*
+
+*.sh
+
+results/*
+outputs/*
+checkpoints/*
+
+__pycache__*
+
+*.xlsx
