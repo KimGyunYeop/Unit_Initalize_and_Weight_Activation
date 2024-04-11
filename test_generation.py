@@ -62,6 +62,7 @@ if args.model_load_path is not None:
 if args.dev:
     args.result_path = "test_"+args.result_path
     
+os.makedirs(args.data_path, exist_ok=True)
 if task == "cnndm":
     dataset = load_dataset("cnn_dailymail", "3.0.0" , cache_dir=server_env.data_path)
     metric = load_metric('rouge' , cache_dir=server_env.data_path)

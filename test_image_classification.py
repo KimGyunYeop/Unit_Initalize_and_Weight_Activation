@@ -69,6 +69,7 @@ if args.dev:
 dataset_name = args.image_classification_dataset 
 dataset_labeldict = dataset_to_labeldict[dataset_name]
 dataset_imagedict = dataset_to_imagedict[dataset_name]
+os.makedirs(args.data_path, exist_ok=True)
 dataset = load_dataset(dataset_name , cache_dir=args.data_path, use_auth_token=True) 
 metric = load_metric("accuracy") 
 
