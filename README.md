@@ -8,10 +8,10 @@ This repository is experiment code of {paper_name}
 !! experiment_name must include model name ["deberta","t5"]
 ``` 
 python test_gleu.py \  
-    --result_path {experiment_name}    
-    --glue_task {[cola, sst2, mrpc, stsb, qqp, mnli, mnli_matched, mnli_mismatched, qnli, rte, wnli]}  
-    --init_type {[unit, xavier]}  
-    --act_type {[gelu, midgelu]}  
+    --result_path {experiment_name} \    
+    --glue_task {[cola, sst2, mrpc, stsb, qqp, mnli, mnli_matched, mnli_mismatched, qnli, rte, wnli]} \  
+    --init_type {[unit, xavier]} \  
+    --act_type {[gelu, midgelu]} \  
     --add_position {[befdot, afterffnn, both]}  
 ```
 
@@ -19,10 +19,10 @@ if you wand testing mrpc with our proposed method and additional layer is insert
 
 ``` 
 python test_gleu.py \  
-    --result_path deberta_test
-    --glue_task mrpc  
-    --init_type unit  
-    --act_type midgelu  
+    --result_path deberta_test \
+    --glue_task mrpc \  
+    --init_type unit \  
+    --act_type midgelu \  
     --add_position befdot
 ```
 
@@ -31,10 +31,10 @@ python test_gleu.py \
 !! experiment_name must include model name ["t5"]
 ``` 
 python test_generation.py \  
-    --result_path {experiment_name}    
-    --generation_task {[cnndm, wmt_en_ro]}  
-    --init_type {[unit, xavier]}  
-    --act_type {[gelu, midgelu]}  
+    --result_path {experiment_name} \    
+    --generation_task {[cnndm, wmt_en_ro]} \  
+    --init_type {[unit, xavier]} \  
+    --act_type {[gelu, midgelu]} \  
     --add_position {[befdot, afterffnn, both]}  
 ```
 
@@ -43,9 +43,9 @@ python test_generation.py \
 !! experiment_name must include model name ["vit"]
 ``` 
 python test_image_classification.py \  
-    --result_path {experiment_name}    
-    --image_classification_dataset {["cifar100", "imagenet-1k"]}  
-    --init_type {[unit, xavier]}  
-    --act_type {[gelu, midgelu]}  
+    --result_path {experiment_name} \    
+    --image_classification_dataset {["cifar100", "imagenet-1k"]} \  
+    --init_type {[unit, xavier]} \  
+    --act_type {[gelu, midgelu]} \  
     --add_position {[befdot, afterffnn, both]}  
 ```
