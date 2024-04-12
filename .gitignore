@@ -7,6 +7,9 @@ wandb/*
 results/*
 outputs/*
 checkpoints/*
+datasets/*
+*visual*
+*.lock
 
 __pycache__*
 

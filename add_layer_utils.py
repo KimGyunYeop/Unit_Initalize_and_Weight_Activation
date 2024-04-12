@@ -44,7 +44,7 @@ class CustomLinearLayer(nn.Module):
 
 def add_unit_init_linear(in_features, out_features, bias=False, init_type="unit", act_type=None):
     
-    if init_type.lower() not in ["unit", "he"]:
+    if init_type.lower() not in ["unit", "xavier"]:
         assert "invaild initalize type of adding layer!!"
         
     if in_features != out_features:

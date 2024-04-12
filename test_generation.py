@@ -27,7 +27,6 @@ MODEL_LIST = {
 
 args = parse_args()
 seed_fix(args.seed)
-server_env = argparse.Namespace(**json.load(open("server_envs.json","r")))
 device = "cuda:"+str(args.gpu)
 
 model_type = None
@@ -39,20 +38,7 @@ if model_type is None:
 
 args.result_path = gen_make_result_path(args)
 
-api = wandb.Api()
-
-runs = api.runs(path="isnlp_lab/unit_init_generation")
-
 task = args.generation_task
-
-print("{}_{}".format(args.result_path, task))
-print("check duplicate")
-for r in runs:
-    if r.state == "crashed" or r.state == "failed" or r.state == "killed":
-        continue
-    
-    if r.name == "{}_{}".format(args.result_path, task):
-        raise "duplicate experiment"
 
 
 model_utils = MODEL_LIST[model_type]
@@ -62,12 +48,13 @@ if args.model_load_path is not None:
 if args.dev:
     args.result_path = "test_"+args.result_path
     
+os.makedirs(args.data_path, exist_ok=True)
 if task == "cnndm":
-    dataset = load_dataset("cnn_dailymail", "3.0.0" , cache_dir=server_env.data_path)
-    metric = load_metric('rouge' , cache_dir=server_env.data_path)
+    dataset = load_dataset("cnn_dailymail", "3.0.0" , cache_dir=args.data_path)
+    metric = load_metric('rouge' , cache_dir=args.data_path)
 elif task == "wmt_en_ro":
-    dataset = load_dataset("wmt16", "ro-en" , cache_dir=server_env.data_path)
-    metric = load_metric('sacrebleu' , cache_dir=server_env.data_path)
+    dataset = load_dataset("wmt16", "ro-en" , cache_dir=args.data_path)
+    metric = load_metric('sacrebleu' , cache_dir=args.data_path)
 print(dataset)
 
 tmp_matric = metric.compute(predictions=["hello there general kenobi", "on our way to ankh morpork"], references=[["hello there general kenobi"], ["goodbye ankh morpork"]])
@@ -209,14 +196,6 @@ print(model)
 print(args)
 
 args.model_config = model.config
-if not args.dev:
-    wandb.init(project="unit_init_generation", entity="isnlp_lab",name="{}_{}".format(args.result_path, task), reinit=True)
-    for i,_ in tmp_matric.items():
-        wandb.define_metric("{}_dev_{}".format(task,i), summary="max")
-        wandb.define_metric("{}_test_{}".format(task,i), summary="max")
-    wandb.define_metric("{}_dev_{}".format(task,"acc"), summary="max")
-    wandb.define_metric("{}_test_{}".format(task,"acc"), summary="max")
-    wandb.config.update(args)
 
 optimizer = AdamW(model.parameters(), lr=args.learning_rate, betas=[args.beta1,args.beta2], weight_decay=args.weight_decay, eps=args.eps)
 # optimizer = Adafactor(model.parameters(), lr=args.learning_rate, relative_step=False, warmup_init=False)
@@ -301,8 +280,6 @@ def evaluate(steps):
 
     change_score_name["steps"] = steps
     
-    if not args.dev:
-        wandb.log(change_score_name)
     
     model.train()
 

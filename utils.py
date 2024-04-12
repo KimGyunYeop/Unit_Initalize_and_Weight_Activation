@@ -51,7 +51,7 @@ def parse_args():
         "--accumulate_step", type=int, default=16, required=False
     )
     parser.add_argument(
-        "--data_path", "./", required=False
+        "--data_path", type=str, default="datasets", required=False
     )
     
     
@@ -87,10 +87,10 @@ def parse_args():
         "--add_linear_layer", type=str, default=None
     )
     parser.add_argument(
-        "--init_type", type=str, default="unit", choices=["unit", "he"]
+        "--init_type", type=str, default="unit", choices=["unit", "xavier"]
     )
     parser.add_argument(
-        "--head_indi", default=False, action="store_true"
+        "--head_indi", default=True, action="store_true"
     )
     parser.add_argument(
         "--add_position", default="befdot", choices=["befdot", "aftffnn1", "aftffnn2", "afterffnn", "both"]

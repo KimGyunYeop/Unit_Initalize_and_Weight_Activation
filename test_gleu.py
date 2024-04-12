@@ -65,7 +65,7 @@ if args.model_load_path is not None:
 if args.dev:
     args.result_path = "test_"+args.result_path
     
-
+os.makedirs(args.data_path, exist_ok=True)
 dataset = load_dataset("glue", task , cache_dir=args.data_path)
 metric = load_metric('glue', task , cache_dir=args.data_path)
 print(dataset)
