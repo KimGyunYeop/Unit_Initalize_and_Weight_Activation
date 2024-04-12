@@ -1,6 +1,6 @@
 # Unit_Initalize_and_Weight_Activation
 
-This repository is experiment code of {paper_name}
+This repository is experiment code of "How to Insert Additional Layer Between Middle Layer of Pre-Trained Model"
 
 ## Usage
 Detailed hyperparameters of each experiment are found in parse_args() at utils.py 
