@@ -2,6 +2,8 @@
 
 This repository is experiment code of "How to Insert Additional Layer Between Middle Layer of Pre-Trained Model"
 
+T5_transformers.py, Debertav2_transformers.py, modeling_vit.py are files that partially modify the code of transformer github(https://github.com/huggingface/transformers).
+
 ## Usage
 Detailed hyperparameters of each experiment are found in parse_args() at utils.py 
 ### For GLEU test  
