@@ -8,8 +8,11 @@ results/*
 outputs/*
 checkpoints/*
 datasets/*
+<<<<<<< HEAD
 *visual*
 *.lock
+=======
+>>>>>>> a203fec30ef0cf72b4465b26c45cebc223f172ea
 
 __pycache__*
 

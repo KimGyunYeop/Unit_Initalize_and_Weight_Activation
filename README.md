@@ -3,8 +3,8 @@
 This repository is experiment code of {paper_name}
 
 ## Usage
-
-#### For GLEU test  
+Detailed hyperparameters of each experiment are found in parse_args() at utils.py 
+### For GLEU test  
 !! experiment_name must include model name ["deberta","t5"]
 ``` 
 python test_gleu.py \
@@ -15,7 +15,7 @@ python test_gleu.py \
     --add_position {[befdot, afterffnn, both]}
 ```
 
-if you wand testing mrpc with our proposed method and additional layer is inserted in multi-haed attention position
+if you want testing mrpc with our proposed method and additional layer is inserted in multi-haed attention position
 
 ``` 
 python test_gleu.py \
@@ -26,7 +26,7 @@ python test_gleu.py \
     --add_position befdot
 ```
 
-#### For Text Generation
+### For Text Generation
 
 !! experiment_name must include model name ["t5"]
 ``` 
@@ -38,7 +38,18 @@ python test_generation.py \
     --add_position {[befdot, afterffnn, both]}  
 ```
 
-#### For Image Classificaiton
+if you want testing wmt16 english to romanian with our proposed method and additional layer is inserted in multi-haed attention position
+``` 
+python test_generation.py \
+    --result_path t5_test \
+    --generation_task wmt_en_ro \
+    --init_type unit \
+    --act_type midgelu \
+    --add_position befdot
+```
+
+
+### For Image Classificaiton
 
 !! experiment_name must include model name ["vit"]
 ``` 
