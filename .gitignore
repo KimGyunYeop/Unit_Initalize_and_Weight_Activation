@@ -3,17 +3,23 @@ server_envs.json
 wandb/*
 
 *.sh
+!scripts/*.sh
 
 results/*
 outputs/*
 checkpoints/*
 datasets/*
-<<<<<<< HEAD
 *visual*
 *.lock
-=======
->>>>>>> a203fec30ef0cf72b4465b26c45cebc223f172ea
 
 __pycache__*
 
 *.xlsx
+
+*.out
+*.pdf
+backups*
+rebuttal*
+checkpoint*
+
+*out

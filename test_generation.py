@@ -1,162 +1,140 @@
-from datasets import load_dataset, load_metric
-from transformers import AdamW, get_scheduler, DebertaV2Tokenizer, T5Tokenizer, Adafactor, DataCollatorForSeq2Seq
-
-from T5_transformers import T5ForConditionalGeneration, T5Config
-from utils import parse_args, gen_make_result_path, seed_fix
+import os
 
 import torch
+from datasets import load_dataset, load_metric
 from torch.utils.data import DataLoader
-from torch.optim import Adam
-
 from tqdm import tqdm
-import os
-import json
-import wandb
-import argparse
-import numpy as np
+from transformers import AdamW, DataCollatorForSeq2Seq, T5Tokenizer
+
+from T5_transformers import T5Config, T5ForConditionalGeneration
+from utils import (
+    gen_make_result_path,
+    maybe_skip_completed_run,
+    maybe_dispatch_multi_seed_runs,
+    parse_args,
+    save_run_metrics,
+    seed_fix,
+)
 
 MODEL_LIST = {
-    "t5":{
-        "tokenizer" : T5Tokenizer,
-        "model" : T5ForConditionalGeneration,
-        "config" : T5Config,
-        "model_load_path" : "google-t5/t5-base"
+    "t5": {
+        "tokenizer": T5Tokenizer,
+        "model": T5ForConditionalGeneration,
+        "config": T5Config,
+        "model_load_path": "google-t5/t5-base",
     }
 }
 
 
 args = parse_args()
+if maybe_dispatch_multi_seed_runs(args):
+    raise SystemExit(0)
+
 seed_fix(args.seed)
-device = "cuda:"+str(args.gpu)
+device = "cuda:" + str(args.gpu)
 
 model_type = None
-for i in list(MODEL_LIST.keys()):
-    if i in args.result_path.split("_"):
-        model_type = i
+for candidate_model_type in MODEL_LIST:
+    if candidate_model_type in args.result_path.split("_"):
+        model_type = candidate_model_type
+        break
 if model_type is None:
-    assert "result_path is must include modeltype!!"    
+    raise ValueError("result_path must include model type")
 
 args.result_path = gen_make_result_path(args)
+if args.dev:
+    args.result_path = "test_" + args.result_path
 
 task = args.generation_task
-
-
 model_utils = MODEL_LIST[model_type]
 if args.model_load_path is not None:
-    model_utils['model_load_path'] = args.model_load_path
-    
-if args.dev:
-    args.result_path = "test_"+args.result_path
-    
+    model_utils["model_load_path"] = args.model_load_path
+
+if maybe_skip_completed_run(args, model_name=model_type, task_name=task):
+    raise SystemExit(0)
+
 os.makedirs(args.data_path, exist_ok=True)
 if task == "cnndm":
-    dataset = load_dataset("cnn_dailymail", "3.0.0" , cache_dir=args.data_path)
-    metric = load_metric('rouge' , cache_dir=args.data_path)
-elif task == "wmt_en_ro":
-    dataset = load_dataset("wmt16", "ro-en" , cache_dir=args.data_path)
-    metric = load_metric('sacrebleu' , cache_dir=args.data_path)
+    dataset = load_dataset("cnn_dailymail", "3.0.0", cache_dir=args.data_path)
+else:
+    dataset = load_dataset("wmt16", "ro-en", cache_dir=args.data_path)
 print(dataset)
 
-tmp_matric = metric.compute(predictions=["hello there general kenobi", "on our way to ankh morpork"], references=[["hello there general kenobi"], ["goodbye ankh morpork"]])
-print(tmp_matric)
-    
 tokenizer = model_utils["tokenizer"].from_pretrained(model_utils["model_load_path"])
 pad_token_id = tokenizer.pad_token_id
 print(pad_token_id)
 
-def custom_collate_fn(batches):
-    
+
+def build_metric():
     if task == "cnndm":
-        sentences = [batch["article"] for batch in batches]
-        labels = [batch["highlights"] for batch in batches]
-    elif task == "wmt_en_ro":
-        sentences = [batch["translation"]["en"] for batch in batches]
-        labels = [batch["translation"]["ro"] for batch in batches]
-    
-    
-    tokenized_inputs = tokenizer(
-        sentences, truncation=True, max_length=tokenizer.model_max_length, return_tensors="pt", padding=True
-    )
-    
-    tokenized_labels = tokenizer(
-        text_target=labels, truncation=True, max_length=tokenizer.model_max_length, return_tensors="pt", padding=True
-    )
-
-    # tokenized_labels["input_ids"].masked_fill_(tokenized_labels["input_ids"] == pad_token_id, -100)
-    tokenized_inputs["labels"] = tokenized_labels["input_ids"]
-    # tokenized_inputs["decoder_attention_mask"] = tokenized_labels["attention_mask"]
-    
-    return tokenized_inputs
-
-accumulation_steps = args.generate_full_batch // args.batch_size
-
-
-# train_dataloader = DataLoader(dataset["train"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4, shuffle=True)
-# val_dataloader = DataLoader(dataset["validation"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4)
-# test_dataloader = DataLoader(dataset["test"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4,)
+        return load_metric("rouge", cache_dir=args.data_path)
+    return load_metric("sacrebleu", cache_dir=args.data_path, trust_remote_code=True)
 
 
 model = model_utils["model"].from_pretrained(model_utils["model_load_path"])
 
+
 def preprocess_function(examples):
-        if "wmt" in task:
-            inputs = [ex["en"] for ex in examples["translation"]]
-            targets = [ex["ro"] for ex in examples["translation"]]
-        elif task == "cnndm":
-            inputs = examples["article"]
-            targets = examples["highlights"]
-            
-        # inputs = [prefix + inp for inp in inputs]
-        model_inputs = tokenizer(inputs, max_length=tokenizer.model_max_length, padding=False, truncation=True)
+    if "wmt" in task:
+        inputs = [example["en"] for example in examples["translation"]]
+        targets = [example["ro"] for example in examples["translation"]]
+    else:
+        inputs = examples["article"]
+        targets = examples["highlights"]
 
-        # print(targets)
-        # Tokenize targets with the `text_target` keyword argument
-        labels = tokenizer(text_target=targets, max_length=tokenizer.model_max_length, padding=False, truncation=True)
-        # print(labels)
-        # assert 0
+    model_inputs = tokenizer(inputs, max_length=tokenizer.model_max_length, padding=False, truncation=True)
+    labels = tokenizer(text_target=targets, max_length=tokenizer.model_max_length, padding=False, truncation=True)
+    model_inputs["labels"] = labels["input_ids"]
+    return model_inputs
 
-        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
-        # padding in the loss.
-        # if padding == "max_length" and data_args.ignore_pad_token_for_loss:
-        #     labels["input_ids"] = [
-        #         [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-        #     ]
 
-        model_inputs["labels"] = labels["input_ids"]
-        return model_inputs
-    
 column_names = dataset["train"].column_names
 dataset["train"] = dataset["train"].map(
-                preprocess_function,
-                batched=True,
-                num_proc=4,
-                remove_columns=column_names
-            )
+    preprocess_function,
+    batched=True,
+    num_proc=4,
+    remove_columns=column_names,
+)
 dataset["validation"] = dataset["validation"].map(
-                preprocess_function,
-                batched=True,
-                num_proc=4,
-                remove_columns=column_names
-            )
+    preprocess_function,
+    batched=True,
+    num_proc=4,
+    remove_columns=column_names,
+)
 dataset["test"] = dataset["test"].map(
-                preprocess_function,
-                batched=True,
-                num_proc=4,
-                remove_columns=column_names
-            )
+    preprocess_function,
+    batched=True,
+    num_proc=4,
+    remove_columns=column_names,
+)
 
 data_collator = DataCollatorForSeq2Seq(
-            tokenizer,
-            model=model,
-            label_pad_token_id=-100,
-        )
+    tokenizer,
+    model=model,
+    label_pad_token_id=-100,
+)
 
 print(dataset["train"])
 
-train_dataloader = DataLoader(dataset["train"], batch_size=args.batch_size, collate_fn=data_collator, num_workers=4, shuffle=True)
-val_dataloader = DataLoader(dataset["validation"], batch_size=args.batch_size, collate_fn=data_collator, num_workers=4)
-test_dataloader = DataLoader(dataset["test"], batch_size=args.batch_size, collate_fn=data_collator, num_workers=4,)
-    
+train_dataloader = DataLoader(
+    dataset["train"],
+    batch_size=args.batch_size,
+    collate_fn=data_collator,
+    num_workers=4,
+    shuffle=True,
+)
+val_dataloader = DataLoader(
+    dataset["validation"],
+    batch_size=args.batch_size,
+    collate_fn=data_collator,
+    num_workers=4,
+)
+test_dataloader = DataLoader(
+    dataset["test"],
+    batch_size=args.batch_size,
+    collate_fn=data_collator,
+    num_workers=4,
+)
 
 if not args.no_add_linear:
     if args.add_linear_layer is None:
@@ -165,31 +143,58 @@ if not args.no_add_linear:
         elif args.add_linear_num > 0:
             args.add_linear_layer = range(args.add_linear_num)
         else:
-            args.add_linear_layer = range(model.config.num_hidden_layers + args.add_linear_num, model.config.num_hidden_layers)
-    
+            args.add_linear_layer = range(
+                model.config.num_hidden_layers + args.add_linear_num,
+                model.config.num_hidden_layers,
+            )
+
     if args.add_position == "befdot":
-        model.add_unit_init_before_dotpro(layer_num=args.add_linear_layer, head_indi=args.head_indi, init_type=args.init_type, act_type=args.act_type)
+        model.add_unit_init_before_dotpro(
+            layer_num=args.add_linear_layer,
+            head_indi=args.head_indi,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "afterffnn":
-        model.add_unit_init_after_ffnn(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
+        model.add_unit_init_after_ffnn(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "both":
-        model.add_unit_init_after_ffnn(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
-        model.add_unit_init_before_dotpro(layer_num=args.add_linear_layer, head_indi=args.head_indi, init_type=args.init_type, act_type=args.act_type)
-        
+        model.add_unit_init_after_ffnn(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
+        model.add_unit_init_before_dotpro(
+            layer_num=args.add_linear_layer,
+            head_indi=args.head_indi,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "aftffnn1":
-        model.add_unit_init_after_ffnn1(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
+        model.add_unit_init_after_ffnn1(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "aftffnn2":
-        model.add_unit_init_after_ffnn2(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
+        model.add_unit_init_after_ffnn2(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
 
 if args.adapter:
     for name, param in model.named_parameters():
         if "added" not in name and "classifi" not in name:
             param.requires_grad_(requires_grad=False)
-            #param.requires_grad=False
         else:
             param.requires_grad_(requires_grad=True)
-    
+
     for name, param in model.named_parameters():
-        print(param.requires_grad,"\t/\t",name)
+        print(param.requires_grad, "\t/\t", name)
 
 model.to(device)
 print(model)
@@ -197,10 +202,13 @@ print(args)
 
 args.model_config = model.config
 
-optimizer = AdamW(model.parameters(), lr=args.learning_rate, betas=[args.beta1,args.beta2], weight_decay=args.weight_decay, eps=args.eps)
-# optimizer = Adafactor(model.parameters(), lr=args.learning_rate, relative_step=False, warmup_init=False)
-
-# scheduler = get_scheduler("linear", optimizer, args.warmup_steps, args.gen_train_step)
+optimizer = AdamW(
+    model.parameters(),
+    lr=args.learning_rate,
+    betas=[args.beta1, args.beta2],
+    weight_decay=args.weight_decay,
+    eps=args.eps,
+)
 
 for name, param in model.named_parameters():
     if "added" in name:
@@ -208,145 +216,123 @@ for name, param in model.named_parameters():
         break
 
 
-def evaluate(steps):
-
-    
+def evaluate(current_steps, current_train_loss):
     for name, param in model.named_parameters():
         if "added" in name:
             print(name, param)
-            break 
+            break
 
+    metric = build_metric()
     model.eval()
-    losses = []
-    best_dev_score = 0
-    best_test_score = 0
-    
-    
-    
     with torch.no_grad():
         for batches in tqdm(test_dataloader):
-            for idx in batches.keys():
-                batches[idx] = batches[idx].to(device)
-                
-            out = model.generate(input_ids=batches["input_ids"], attention_mask=batches["attention_mask"], num_beams=4, max_new_tokens=300)
+            for key in batches.keys():
+                batches[key] = batches[key].to(device)
+
+            out = model.generate(
+                input_ids=batches["input_ids"],
+                attention_mask=batches["attention_mask"],
+                num_beams=4,
+                max_new_tokens=300,
+            )
             decode_pred = tokenizer.batch_decode(out, skip_special_tokens=True)
-            
-            labels = batches["labels"]
+
+            labels = batches["labels"].clone()
             labels.masked_fill_(labels == -100, pad_token_id)
             labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-            
-            decode_pred = [i.strip() for i in decode_pred]
+
+            decode_pred = [item.strip() for item in decode_pred]
             if task == "cnndm":
-                labels = [i.strip() for i in labels]
-            elif "wmt" in task:
-                labels = [[i.strip()] for i in labels]
-            
-            # for i, j in zip(decode_pred, labels):
-            #     print(i,j)    
-            
+                labels = [item.strip() for item in labels]
+            else:
+                labels = [[item.strip()] for item in labels]
+
             metric.add_batch(predictions=decode_pred, references=labels)
-            
-        final_score = metric.compute()
 
-        print("dev")
-        print(final_score)
-        if task == "cnndm":
-            rouge_1 = final_score["rouge1"].mid.fmeasure
-            rouge_2 = final_score["rouge2"].mid.fmeasure
-            rouge_L = final_score["rougeL"].mid.fmeasure
-            rouge_Lsum = final_score["rougeLsum"].mid.fmeasure
-        
-            change_score_name = dict()
-            for i,j in final_score.items():
-                change_score_name["cnndm_test_rouge1"] = rouge_1
-                change_score_name["cnndm_test_rouge2"] = rouge_2
-                change_score_name["cnndm_test_rougeL"] = rouge_L
-                change_score_name["cnndm_test_rougeLsum"] = rouge_Lsum
+    final_score = metric.compute()
+    print("test")
+    print(final_score)
 
-        elif "wmt" in task:
-            bleu_score = final_score["score"]
-            precision1 = final_score["precisions"][0]
-            precision2 = final_score["precisions"][1]
-            precision3 = final_score["precisions"][2]
-            precision4 = final_score["precisions"][3]
-            
-            change_score_name = dict()
-            for i,j in final_score.items():
-                change_score_name["wmt_en_ro_bleu"] = bleu_score
-                change_score_name["wmt_en_ro_precision1"] = precision1
-                change_score_name["wmt_en_ro_precision2"] = precision2
-                change_score_name["wmt_en_ro_precision3"] = precision3
-                change_score_name["wmt_en_ro_precision4"] = precision4
+    metrics = {
+        "{}_train_loss".format(task): current_train_loss,
+        "steps": current_steps,
+    }
+    if task == "cnndm":
+        metrics["cnndm_test_rouge1"] = final_score["rouge1"].mid.fmeasure
+        metrics["cnndm_test_rouge2"] = final_score["rouge2"].mid.fmeasure
+        metrics["cnndm_test_rougeL"] = final_score["rougeL"].mid.fmeasure
+        metrics["cnndm_test_rougeLsum"] = final_score["rougeLsum"].mid.fmeasure
+    else:
+        metrics["wmt_en_ro_bleu"] = final_score["score"]
+        metrics["wmt_en_ro_precision1"] = final_score["precisions"][0]
+        metrics["wmt_en_ro_precision2"] = final_score["precisions"][1]
+        metrics["wmt_en_ro_precision3"] = final_score["precisions"][2]
+        metrics["wmt_en_ro_precision4"] = final_score["precisions"][3]
 
-    change_score_name["steps"] = steps
-    
-    
     model.train()
+    return metrics
 
 
 steps = 1
 update_step = 1
-for E in range(1, args.epoch+1):
-    model.train()
-    
-    losses = []
-    dl = tqdm(train_dataloader)
-    for batches in dl:
+last_train_loss = None
+latest_metrics = {}
+stop_training = False
+accumulation_steps = max(1, args.generate_full_batch // args.batch_size)
 
-        for idx in batches.keys():
-            batches[idx] = batches[idx].to(device)
+for epoch_idx in range(1, args.epoch + 1):
+    model.train()
+    losses = []
+    train_loop = tqdm(train_dataloader)
+    for batches in train_loop:
+        for key in batches.keys():
+            batches[key] = batches[key].to(device)
 
         out = model(**batches)
-
         out.loss.backward()
         losses.append(out.loss.item())
-        
-        # if not args.adapter:
-        #     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        
+
         if steps % accumulation_steps == 0 or steps == len(train_dataloader) - 1:
-                optimizer.step()
-                optimizer.zero_grad()
-                # scheduler.step()
-                update_step += 1
-                
-            
-                
-        dl.set_description("loss="+str(out.loss.item()))
-        
+            optimizer.step()
+            optimizer.zero_grad()
+            update_step += 1
+
+        train_loop.set_description("loss=" + str(out.loss.item()))
+
         if steps % args.logging_step == 0:
-            evaluate(steps)
-        
-        
+            current_train_loss = sum(losses) / len(losses)
+            latest_metrics = evaluate(steps, current_train_loss)
+
         if update_step > args.gen_train_step:
-            assert 0
-        
+            stop_training = True
+            break
+
         steps += 1
-         
-            
 
-    print("train_loss = {}".format(sum(losses)/len(losses)))
+    if losses:
+        last_train_loss = sum(losses) / len(losses)
+        print("train_loss = {}".format(last_train_loss))
 
+    if stop_training:
+        break
 
+if last_train_loss is None:
+    last_train_loss = 0.0
 
+final_step = max(steps - 1, 1)
+if not latest_metrics or latest_metrics.get("steps") != final_step:
+    latest_metrics = evaluate(final_step, last_train_loss)
+latest_metrics["update_steps"] = update_step - 1
 
-        
-    #     for batches in tqdm(test_dataloader):
-    #         for idx in batches.keys():
-    #             batches[idx] = batches[idx].to(device)
-            
-    #         out = model(**batches)
-
-    #         # losses.append(out.loss.item())
-    #         if num_labels == 1:
-    #             metric.add_batch(predictions=out.logits, references=batches["labels"])
-    #         else:   
-    #             metric.add_batch(predictions=torch.argmax(out.logits, dim=-1), references=batches["labels"])
-            
-    #     final_score = metric.compute()
-    
-    
-    # print("test", final_score)
-    # for i,j in final_score.items():
-    #     change_score_name["{}_test_{}".format(task, i)] = j
-    # change_score_name["{}_test_{}".format(task, "acc")] = sum(pred_list == label_list)/pred_list.size()[0]
+metrics_path = save_run_metrics(
+    args,
+    model_name=model_type,
+    task_name=task,
+    final_metrics=latest_metrics,
+    checkpoint_dir=None,
+    extra_metadata={
+        "script": "test_generation.py",
+        "evaluation_split": "test",
+    },
+)
+print("saved metrics to", metrics_path)

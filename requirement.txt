@@ -1,0 +1,15 @@
+datasets<3.0.0
+torch<2.9
+torchvision
+transformers==4.37.2
+evaluate
+wandb
+pandas
+numpy
+tqdm
+sacrebleu
+rouge_score 
+nltk
+sentencepiece
+scipy
+scikit-learn

@@ -1,116 +1,144 @@
-from datasets import load_dataset, load_metric
-from transformers import AdamW, get_scheduler, get_cosine_schedule_with_warmup
-from transformers import ViTImageProcessor #, ViTForImageClassification
-from transformers import AutoImageProcessor, ConvNextForImageClassification
-# from transformers.models.vit.configuration_vit import ViTConfig
-from modeling_vit import ViTForImageClassification, ViTConfig
+import os
 
 import torch
+from datasets import load_dataset, load_metric
 from torch.utils.data import DataLoader
-from torch.optim import Adam
-
-from utils import parse_args, tf_make_result_path, seed_fix
-
 from tqdm import tqdm
-import os
-import json
-import wandb
-import argparse
+from transformers import AutoImageProcessor, ConvNextForImageClassification, ViTImageProcessor
+from transformers import get_cosine_schedule_with_warmup
 
+from modeling_vit import ViTConfig, ViTForImageClassification
+from utils import (
+    maybe_skip_completed_run,
+    maybe_dispatch_multi_seed_runs,
+    parse_args,
+    save_run_metrics,
+    seed_fix,
+    tf_make_result_path,
+)
 
 MODEL_LIST = {
-    "vit":{
-        "model" : ViTForImageClassification,
-        "image_processor" : ViTImageProcessor,
-        "model_load_path" : "google/vit-base-patch16-224-in21k",
-        # "image_processor_load_path" : "google/vit-base-patch16-224-in21k" 
-        "image_processor_load_path" : "google/vit-base-patch16-384"   
+    "vit": {
+        "model": ViTForImageClassification,
+        "image_processor": ViTImageProcessor,
+        "model_load_path": "google/vit-base-patch16-224-in21k",
+        "image_processor_load_path": "google/vit-base-patch16-384",
     },
-    "convnext":{
-        "model" : ConvNextForImageClassification,
-        "image_processor" : AutoImageProcessor,
-        "model_load_path" : "facebook/convnext-tiny-224"
-    }
+    "convnext": {
+        "model": ConvNextForImageClassification,
+        "image_processor": AutoImageProcessor,
+        "model_load_path": "facebook/convnext-tiny-224",
+    },
 }
 
-dataset_to_imagedict = { 
-    "cifar10": 'img',
-    "cifar100": 'img',
-    "imagenet-1k": 'image', 
+DATASET_TO_IMAGEDICT = {
+    "cifar10": "img",
+    "cifar100": "img",
+    "imagenet-1k": "image",
 }
-dataset_to_labeldict = { 
-    "cifar10": 'label',
-    "cifar100": 'fine_label',
-    "imagenet-1k": 'label', 
+DATASET_TO_LABELDICT = {
+    "cifar10": "label",
+    "cifar100": "fine_label",
+    "imagenet-1k": "label",
 }
+
 
 args = parse_args()
+if maybe_dispatch_multi_seed_runs(args):
+    raise SystemExit(0)
+
 seed_fix(args.seed)
-device = "cuda:"+str(args.gpu) 
+device = "cuda:" + str(args.gpu)
 
 model_type = None
-for i in list(MODEL_LIST.keys()): # "vit", "convnext"
-    if i in args.result_path.split("_"):
-        model_type = i
+for candidate_model_type in MODEL_LIST:
+    if candidate_model_type in args.result_path.split("_"):
+        model_type = candidate_model_type
+        break
 if model_type is None:
-    assert "result path must include model type!"    
+    raise ValueError("result_path must include model type")
 
 args.result_path = tf_make_result_path(args)
-
-model_utils = MODEL_LIST[model_type] # model, image_processor, model_load_path
-if args.model_load_path is not None:
-    model_utils['model_load_path'] = args.model_load_path
-    
 if args.dev:
-    args.result_path = "test_"+args.result_path
+    args.result_path = "test_" + args.result_path
 
-##################################################
-    
-dataset_name = args.image_classification_dataset 
-dataset_labeldict = dataset_to_labeldict[dataset_name]
-dataset_imagedict = dataset_to_imagedict[dataset_name]
+model_utils = MODEL_LIST[model_type]
+if args.model_load_path is not None:
+    model_utils["model_load_path"] = args.model_load_path
+
+dataset_name = args.image_classification_dataset
+dataset_labeldict = DATASET_TO_LABELDICT[dataset_name]
+dataset_imagedict = DATASET_TO_IMAGEDICT[dataset_name]
+
+if maybe_skip_completed_run(args, model_name=model_type, task_name=dataset_name):
+    raise SystemExit(0)
+
 os.makedirs(args.data_path, exist_ok=True)
-dataset = load_dataset(dataset_name , cache_dir=args.data_path, use_auth_token=True) 
-metric = load_metric("accuracy") 
+dataset = load_dataset(dataset_name, cache_dir=args.data_path, use_auth_token=True)
 
-if dataset_name=="cifar100":
-    eval_step=args.cifar_eval_step
-elif dataset_name=="imagenet-1k":
-    eval_step=args.imagenet_eval_step
+if dataset_name in ["cifar10", "cifar100"]:
+    eval_step = args.cifar_eval_step
+else:
+    eval_step = args.imagenet_eval_step
 
-processor = model_utils["image_processor"].from_pretrained(model_utils["image_processor_load_path"])
+processor = model_utils["image_processor"].from_pretrained(
+    model_utils.get("image_processor_load_path", model_utils["model_load_path"])
+)
+
+
+def build_metric():
+    return load_metric("accuracy")
+
 
 def custom_collate_fn(batches):
-    if dataset_name=="imagenet-1k":
-      inputs = processor([batch[dataset_imagedict].convert('RGB') for batch in batches], return_tensors='pt') #inputs['pixel_values']
+    if dataset_name == "imagenet-1k":
+        inputs = processor([batch[dataset_imagedict].convert("RGB") for batch in batches], return_tensors="pt")
     else:
-      inputs = processor([batch[dataset_imagedict] for batch in batches], return_tensors='pt') #inputs['pixel_values']
+        inputs = processor([batch[dataset_imagedict] for batch in batches], return_tensors="pt")
 
-    inputs['labels'] = torch.tensor([batch[dataset_labeldict] for batch in batches])
-    
+    inputs["labels"] = torch.tensor([batch[dataset_labeldict] for batch in batches])
     return inputs
 
-train_dataloader = DataLoader(dataset["train"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4, shuffle=True)
+
+train_dataloader = DataLoader(
+    dataset["train"],
+    batch_size=args.batch_size,
+    collate_fn=custom_collate_fn,
+    num_workers=4,
+    shuffle=True,
+)
 try:
-    val_dataloader = DataLoader(dataset["validation"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4)
-except:
-    val_dataloader = DataLoader(dataset["test"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4)
-test_dataloader = DataLoader(dataset["test"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4)
-if dataset_name=="imagenet-1k":
-    test_dataloader = DataLoader(dataset["validation"], batch_size=args.batch_size, collate_fn=custom_collate_fn, num_workers=4)
+    validation_split = dataset["validation"]
+except KeyError:
+    validation_split = dataset["test"]
 
-##################################################
+val_dataloader = DataLoader(
+    validation_split,
+    batch_size=args.batch_size,
+    collate_fn=custom_collate_fn,
+    num_workers=4,
+)
+test_dataloader = DataLoader(
+    dataset["test"],
+    batch_size=args.batch_size,
+    collate_fn=custom_collate_fn,
+    num_workers=4,
+)
+if dataset_name == "imagenet-1k":
+    test_dataloader = DataLoader(
+        dataset["validation"],
+        batch_size=args.batch_size,
+        collate_fn=custom_collate_fn,
+        num_workers=4,
+    )
 
-labels = dataset['train'].features[dataset_labeldict].names
-
+labels = dataset["train"].features[dataset_labeldict].names
 
 model = model_utils["model"].from_pretrained(
-    model_utils["model_load_path"], 
+    model_utils["model_load_path"],
     num_labels=len(labels),
-    #id2label={str(i): c for i, c in enumerate(labels)},
-    #label2id={c: str(i) for i, c in enumerate(labels)},
-    ignore_mismatched_sizes=True
-    )
+    ignore_mismatched_sizes=True,
+)
 
 if not args.no_add_linear:
     if args.add_linear_layer is None:
@@ -119,143 +147,168 @@ if not args.no_add_linear:
         elif args.add_linear_num > 0:
             args.add_linear_layer = range(args.add_linear_num)
         else:
-            args.add_linear_layer = range(model.config.num_hidden_layers + args.add_linear_num, model.config.num_hidden_layers)
+            args.add_linear_layer = range(
+                model.config.num_hidden_layers + args.add_linear_num,
+                model.config.num_hidden_layers,
+            )
     print(args.add_linear_layer)
     if args.add_position == "befdot":
-        model.vit.add_unit_init_before_dotpro(layer_num=args.add_linear_layer, head_indi=args.head_indi, init_type=args.init_type, act_type=args.act_type)
+        model.vit.add_unit_init_before_dotpro(
+            layer_num=args.add_linear_layer,
+            head_indi=args.head_indi,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "afterffnn":
-        model.vit.add_unit_init_after_ffnn(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
+        model.vit.add_unit_init_after_ffnn(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
     elif args.add_position == "both":
-        model.vit.add_unit_init_after_ffnn(layer_num=args.add_linear_layer, init_type=args.init_type, act_type=args.act_type)
-        model.vit.add_unit_init_before_dotpro(layer_num=args.add_linear_layer, head_indi=args.head_indi, init_type=args.init_type, act_type=args.act_type)
-    
+        model.vit.add_unit_init_after_ffnn(
+            layer_num=args.add_linear_layer,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
+        model.vit.add_unit_init_before_dotpro(
+            layer_num=args.add_linear_layer,
+            head_indi=args.head_indi,
+            init_type=args.init_type,
+            act_type=args.act_type,
+        )
 
 if args.adapter:
     for name, param in model.named_parameters():
         if "added" not in name and "classifi" not in name:
             param.requires_grad_(requires_grad=False)
-            #param.requires_grad=False
         else:
             param.requires_grad_(requires_grad=True)
-    
-    
+
     for name, param in model.named_parameters():
-        print(param.requires_grad,"\t/\t",name)
-    
-    
+        print(param.requires_grad, "\t/\t", name)
+
 model.to(device)
 print(model)
-# assert 0
 
-# optimizer = AdamW(model.parameters(), lr=args.learning_rate, betas=[args.beta1,args.beta2], weight_decay=args.weight_decay, eps=args.eps)
-# scheduler = get_scheduler("linear", optimizer, args.warmup_steps, len(train_dataloader)* args.epoch) 
-optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=args.momentum, weight_decay=args.weight_decay)
-scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.epoch*len(train_dataloader))
-# num_training_steps 다시 확인하기
-
-##################################################
+optimizer = torch.optim.SGD(
+    model.parameters(),
+    lr=args.learning_rate,
+    momentum=args.momentum,
+    weight_decay=args.weight_decay,
+)
+scheduler = get_cosine_schedule_with_warmup(
+    optimizer,
+    num_warmup_steps=args.warmup_steps,
+    num_training_steps=args.epoch * len(train_dataloader),
+)
 
 args.model_config = model.config
-
-tmp_metric = metric.compute(predictions=torch.Tensor([0,1]), references=torch.Tensor([0,1]))
-#####?????
-
-save_path='checkpoints/'+args.result_path+"_"+args.image_classification_dataset
-os.makedirs(save_path,exist_ok=True)
+save_path = None
+if not args.skip_checkpoint_save:
+    save_path = "checkpoints/" + args.result_path + "_" + args.image_classification_dataset
+    os.makedirs(save_path, exist_ok=True)
 
 print("Model Type:", model_type)
 print("Dataset Name:", dataset_name)
 
-step_cnt=0
 
-for E in range(1, args.epoch+1):
-    model.train()
-    
-    
+def evaluate(loader, split_name):
+    metric = build_metric()
     losses = []
-    dl = tqdm(train_dataloader)
-    for batches in dl:
+    model.eval()
+    with torch.no_grad():
+        for batches in tqdm(loader):
+            for key in batches.keys():
+                batches[key] = batches[key].to(device)
+            batches["interpolate_pos_encoding"] = True
+
+            out = model(**batches)
+            losses.append(out.loss.item())
+            metric.add_batch(predictions=torch.argmax(out.logits, dim=-1), references=batches["labels"])
+
+    final_score = metric.compute()
+    average_loss = sum(losses) / len(losses)
+    print("{}_loss = {}".format(split_name, average_loss))
+    print(split_name, final_score)
+
+    metrics = {
+        "{}_{}_loss".format(dataset_name, split_name): average_loss,
+    }
+    for metric_name, metric_value in final_score.items():
+        metrics["{}_{}_{}".format(dataset_name, split_name, metric_name)] = metric_value
+    model.train()
+    return metrics
+
+
+step_cnt = 0
+last_train_loss = 0.0
+latest_metrics = {}
+last_eval_step = None
+
+for epoch_idx in range(1, args.epoch + 1):
+    model.train()
+    train_losses = []
+    train_loop = tqdm(train_dataloader)
+    for batches in train_loop:
         step_cnt += 1
 
-        for idx in batches.keys():
-            batches[idx] = batches[idx].to(device)
+        for key in batches.keys():
+            batches[key] = batches[key].to(device)
+        batches["interpolate_pos_encoding"] = True
 
-        # print(batches)
-        # print(batches["pixel_values"].shape) # torch.Size([bs, 3, 224, 224])
-        # print(batches["labels"].shape) # torch.Size([bs])        
-        batches["interpolate_pos_encoding"]=True
-        
         out = model(**batches)
-        #print(out.logits.shape) # torch.Size([bs, num_labels])
-        
         out.loss.backward()
-        losses.append(out.loss.item())
-        
-        # if step_cnt == args.accumulate_step:
-        if True:
-            #step_cnt = 0
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step()
-            
-        dl.set_description("loss="+str(out.loss.item()))
+        train_losses.append(out.loss.item())
 
-    # print("train_loss = {}".format(sum(losses)/len(losses)))
-    
-    ##########
-        if step_cnt % eval_step==0:
-            model.eval()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        optimizer.zero_grad()
+        scheduler.step()
 
-            losses = []
-            # best_dev_score = 0
-            # best_test_score = 0
+        train_loop.set_description("loss=" + str(out.loss.item()))
 
-            with torch.no_grad():
-                for batches in tqdm(val_dataloader):
-                    for idx in batches.keys():
-                        batches[idx] = batches[idx].to(device)
-                    batches["interpolate_pos_encoding"]=True
-                    
-                    out = model(**batches)
+        if step_cnt % eval_step == 0:
+            dev_metrics = evaluate(val_dataloader, "dev")
+            test_metrics = evaluate(test_dataloader, "test")
+            latest_metrics = {
+                "{}_train_loss".format(dataset_name): sum(train_losses) / len(train_losses),
+                "epoch": epoch_idx,
+                "step": step_cnt,
+                "lr": optimizer.param_groups[0]["lr"],
+            }
+            latest_metrics.update(dev_metrics)
+            latest_metrics.update(test_metrics)
 
-                    losses.append(out.loss.item())
-                    metric.add_batch(predictions=torch.argmax(out.logits, dim=-1), references=batches["labels"])
-                    # pred_list.append(torch.argmax(out.logits, dim=-1))
-                    # label_list.append(batches["labels"])
-                    
-                final_score = metric.compute()
+            if save_path is not None:
+                model_name = "model_" + str(step_cnt) + ".bin"
+                torch.save(model.state_dict(), os.path.join(save_path, model_name))
+            last_eval_step = step_cnt
 
-                print("dev_loss = {}".format(sum(losses)/len(losses)))
-                print("dev", final_score)
+    if train_losses:
+        last_train_loss = sum(train_losses) / len(train_losses)
+        print("train_loss = {}".format(last_train_loss))
 
-                change_score_name = dict()
-                for i,j in final_score.items():
-                        change_score_name["{}_dev_{}".format(args.image_classification_dataset, i)] = j
-                # change_score_name["{}_dev_{}".format(task, "acc")] = sum(pred_list == label_list)/pred_list.size()[0]
-                change_score_name["epoch"] = E ##### 균엽이 코드에서 왜 +1 인지 확인하기
-                change_score_name["step"] = step_cnt ##### 균엽이 코드에서 왜 +1 인지 확인하기
-                change_score_name["lr"] = optimizer.param_groups[0]["lr"]
+if last_eval_step != step_cnt:
+    dev_metrics = evaluate(val_dataloader, "dev")
+    test_metrics = evaluate(test_dataloader, "test")
+    latest_metrics = {
+        "{}_train_loss".format(dataset_name): last_train_loss,
+        "epoch": args.epoch,
+        "step": step_cnt,
+        "lr": optimizer.param_groups[0]["lr"],
+    }
+    latest_metrics.update(dev_metrics)
+    latest_metrics.update(test_metrics)
 
-
-
-                for batches in tqdm(test_dataloader):
-                        for idx in batches.keys():
-                            batches[idx] = batches[idx].to(device)
-                        batches["interpolate_pos_encoding"]=True
-                        
-                        out = model(**batches)
-
-                        losses.append(out.loss.item()) 
-                        metric.add_batch(predictions=torch.argmax(out.logits, dim=-1), references=batches["labels"])
-                    
-                final_score = metric.compute()      
-
-                print("test", final_score)
-                for i,j in final_score.items():
-                    change_score_name["{}_test_{}".format(args.image_classification_dataset, i)] = j
-                change_score_name["epoch"] = E ##### 균엽이 코드에서 왜 +1 인지 확인하기
-
-            model_name="model_"+str(step_cnt)+".bin"
-            torch.save(model.state_dict(), os.path.join(save_path, model_name))
-            
+metrics_path = save_run_metrics(
+    args,
+    model_name=model_type,
+    task_name=dataset_name,
+    final_metrics=latest_metrics,
+    checkpoint_dir=save_path,
+    extra_metadata={
+        "script": "test_image_classification.py",
+    },
+)
+print("saved metrics to", metrics_path)

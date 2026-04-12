@@ -220,10 +220,11 @@ class UnitInitLayerBeforeDotproduct(nn.Module):
         
         list_x = []
         for i in range(self.num_heads):
+            layer_idx = i if self.head_indi else 0
             if self.act_f is None:
-                list_x.append(self.added_layers[i](x[:,:,i,:]).unsqueeze(-2))
+                list_x.append(self.added_layers[layer_idx](x[:,:,i,:]).unsqueeze(-2))
             else:
-                list_x.append(self.act_f(self.added_layers[i](x[:,:,i,:])).unsqueeze(-2))
+                list_x.append(self.act_f(self.added_layers[layer_idx](x[:,:,i,:])).unsqueeze(-2))
         x = torch.cat(list_x, dim=-2)
         
         x = x.view(ori_x_shape)

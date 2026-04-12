@@ -7,6 +7,16 @@ If you want to check the modified parts(for proposed method) in these files, you
 
 ## Usage
 Detailed hyperparameters of each experiment are found in parse_args() at utils.py 
+
+### run all experiment of paper
+```
+    SEEDS=13,21,42 GPU=2 nohup bash scripts/run_rebuttal_all.sh
+
+    python aggregate_rebuttal_results.py \
+        --input_root rebuttal_runs \
+        --output_prefix rebuttal_runs/aggregated_rebuttal_results
+```
+
 ### For GLEU test  
 !! experiment_name must include model name ["deberta","t5"]
 ``` 
