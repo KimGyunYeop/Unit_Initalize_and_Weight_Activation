@@ -3,7 +3,16 @@ from transformers import AdamW, get_scheduler, DebertaV2Tokenizer, T5Tokenizer, 
 
 from Debertav2_transformers import DebertaV2ForMaskedLM, DebertaV2Config, DebertaV2ForSequenceClassification
 from T5_transformers import T5ForSequenceClassification, T5Config
-from utils import parse_args, tf_make_result_path, seed_fix
+from utils import (
+    build_metric_tracking_metadata,
+    maybe_dispatch_multi_seed_runs,
+    maybe_skip_completed_run,
+    parse_args,
+    save_run_metrics,
+    seed_fix,
+    tf_make_result_path,
+    update_best_metrics,
+)
 
 import torch
 from torch.utils.data import DataLoader
@@ -38,6 +47,9 @@ task_to_keys = {
 }
 
 args = parse_args()
+if maybe_dispatch_multi_seed_runs(args):
+    raise SystemExit(0)
+
 seed_fix(args.seed)
 device = "cuda:"+str(args.gpu)
 
@@ -71,7 +83,9 @@ if args.model_load_path is not None:
     
 if args.dev:
     args.result_path = "test_"+args.result_path
-    
+
+if maybe_skip_completed_run(args, model_name=model_type, task_name=task):
+    raise SystemExit(0)
 
 os.makedirs(args.data_path, exist_ok=True)
 dataset = load_dataset("glue", task , cache_dir=args.data_path)
@@ -200,6 +214,12 @@ for name, param in model.named_parameters():
         print(name, param)
         break
 
+latest_metrics = {}
+score_history = []
+best_metrics = None
+best_metric_name = None
+best_metric_value = None
+best_metric_maximize = None
 
 for E in range(1, args.epoch+1):
     model.train()
@@ -264,7 +284,34 @@ for E in range(1, args.epoch+1):
             break
 
     change_score_name["epoch"] = E+1
-    
+    latest_metrics = dict(change_score_name)
+    score_history.append(dict(latest_metrics))
+    best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+        best_metrics,
+        best_metric_name,
+        best_metric_value,
+        best_metric_maximize,
+        latest_metrics,
+    )
+
     # model_name="model_"+str(E)+".pt"
     # torch.save(model.state_dict(), os.path.join(save_path, model_name))
+
+metrics_path = save_run_metrics(
+    args,
+    model_name=model_type,
+    task_name=task,
+    final_metrics=latest_metrics,
+    checkpoint_dir=save_path,
+    extra_metadata={
+        "script": "test_gleu_for_mlm.py",
+        **build_metric_tracking_metadata(
+            score_history=score_history,
+            best_metrics=best_metrics,
+            best_metric_name=best_metric_name,
+            best_metric_value=best_metric_value,
+        ),
+    },
+)
+print("saved metrics to", metrics_path)
     

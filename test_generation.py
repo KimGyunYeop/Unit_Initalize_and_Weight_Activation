@@ -8,12 +8,14 @@ from transformers import AdamW, DataCollatorForSeq2Seq, T5Tokenizer
 
 from T5_transformers import T5Config, T5ForConditionalGeneration
 from utils import (
+    build_metric_tracking_metadata,
     gen_make_result_path,
     maybe_skip_completed_run,
     maybe_dispatch_multi_seed_runs,
     parse_args,
     save_run_metrics,
     seed_fix,
+    update_best_metrics,
 )
 
 MODEL_LIST = {
@@ -216,7 +218,7 @@ for name, param in model.named_parameters():
         break
 
 
-def evaluate(current_steps, current_train_loss):
+def evaluate(current_steps, current_train_loss, current_update_steps):
     for name, param in model.named_parameters():
         if "added" in name:
             print(name, param)
@@ -256,6 +258,7 @@ def evaluate(current_steps, current_train_loss):
     metrics = {
         "{}_train_loss".format(task): current_train_loss,
         "steps": current_steps,
+        "update_steps": current_update_steps,
     }
     if task == "cnndm":
         metrics["cnndm_test_rouge1"] = final_score["rouge1"].mid.fmeasure
@@ -277,6 +280,11 @@ steps = 1
 update_step = 1
 last_train_loss = None
 latest_metrics = {}
+score_history = []
+best_metrics = None
+best_metric_name = None
+best_metric_value = None
+best_metric_maximize = None
 stop_training = False
 accumulation_steps = max(1, args.generate_full_batch // args.batch_size)
 
@@ -301,7 +309,15 @@ for epoch_idx in range(1, args.epoch + 1):
 
         if steps % args.logging_step == 0:
             current_train_loss = sum(losses) / len(losses)
-            latest_metrics = evaluate(steps, current_train_loss)
+            latest_metrics = evaluate(steps, current_train_loss, update_step - 1)
+            score_history.append(dict(latest_metrics))
+            best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+                best_metrics,
+                best_metric_name,
+                best_metric_value,
+                best_metric_maximize,
+                latest_metrics,
+            )
 
         if update_step > args.gen_train_step:
             stop_training = True
@@ -321,8 +337,15 @@ if last_train_loss is None:
 
 final_step = max(steps - 1, 1)
 if not latest_metrics or latest_metrics.get("steps") != final_step:
-    latest_metrics = evaluate(final_step, last_train_loss)
-latest_metrics["update_steps"] = update_step - 1
+    latest_metrics = evaluate(final_step, last_train_loss, update_step - 1)
+    score_history.append(dict(latest_metrics))
+    best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+        best_metrics,
+        best_metric_name,
+        best_metric_value,
+        best_metric_maximize,
+        latest_metrics,
+    )
 
 metrics_path = save_run_metrics(
     args,
@@ -333,6 +356,12 @@ metrics_path = save_run_metrics(
     extra_metadata={
         "script": "test_generation.py",
         "evaluation_split": "test",
+        **build_metric_tracking_metadata(
+            score_history=score_history,
+            best_metrics=best_metrics,
+            best_metric_name=best_metric_name,
+            best_metric_value=best_metric_value,
+        ),
     },
 )
 print("saved metrics to", metrics_path)

@@ -533,6 +533,101 @@ def _json_ready(value):
     return value
 
 
+BEST_METRIC_SUFFIX_RULES = [
+    ("_dev_matthews_correlation", True),
+    ("_dev_combined_score", True),
+    ("_dev_f1", True),
+    ("_dev_accuracy", True),
+    ("_dev_pearson", True),
+    ("_dev_spearmanr", True),
+    ("_dev_acc", True),
+    ("_test_rougeLsum", True),
+    ("_test_rougeL", True),
+    ("_test_rouge2", True),
+    ("_test_rouge1", True),
+    ("_bleu", True),
+    ("_test_f1", True),
+    ("_test_accuracy", True),
+    ("_dev_loss", False),
+    ("_test_loss", False),
+]
+
+IGNORED_BEST_METRIC_NAMES = {"epoch", "step", "steps", "update_steps", "lr"}
+
+
+def _is_numeric_scalar(value):
+    return isinstance(value, (int, float, np.generic)) and not isinstance(value, bool)
+
+
+def infer_best_metric(metrics):
+    for suffix, maximize in BEST_METRIC_SUFFIX_RULES:
+        matches = []
+        for metric_name, metric_value in metrics.items():
+            if not _is_numeric_scalar(metric_value):
+                continue
+            if metric_name.endswith(suffix):
+                matches.append((metric_name, float(metric_value)))
+        if matches:
+            metric_name, metric_value = sorted(matches)[0]
+            return metric_name, metric_value, maximize
+
+    fallback_matches = []
+    for metric_name, metric_value in metrics.items():
+        if metric_name in IGNORED_BEST_METRIC_NAMES:
+            continue
+        if not _is_numeric_scalar(metric_value):
+            continue
+        if "train_loss" in metric_name:
+            continue
+        fallback_matches.append((metric_name, float(metric_value)))
+
+    if not fallback_matches:
+        raise ValueError("could not infer a best metric from metrics payload")
+
+    metric_name, metric_value = sorted(fallback_matches)[0]
+    maximize = "loss" not in metric_name.lower()
+    return metric_name, metric_value, maximize
+
+
+def update_best_metrics(best_metrics, best_metric_name, best_metric_value, best_metric_maximize, candidate_metrics):
+    candidate_metric_name, candidate_metric_value, candidate_metric_maximize = infer_best_metric(candidate_metrics)
+
+    if best_metrics is None:
+        return (
+            dict(candidate_metrics),
+            candidate_metric_name,
+            candidate_metric_value,
+            candidate_metric_maximize,
+        )
+
+    is_better = candidate_metric_value > best_metric_value if best_metric_maximize else candidate_metric_value < best_metric_value
+    if is_better:
+        return (
+            dict(candidate_metrics),
+            candidate_metric_name,
+            candidate_metric_value,
+            candidate_metric_maximize,
+        )
+
+    return best_metrics, best_metric_name, best_metric_value, best_metric_maximize
+
+
+def build_metric_tracking_metadata(score_history, best_metrics, best_metric_name, best_metric_value):
+    metadata = {
+        "score_history": list(score_history),
+    }
+    if best_metrics is None:
+        return metadata
+
+    metadata["best_metrics"] = dict(best_metrics)
+    metadata["best_metric_name"] = best_metric_name
+    metadata["best_metric_value"] = float(best_metric_value)
+    for key in ["epoch", "step", "steps", "update_steps", "lr"]:
+        if key in best_metrics:
+            metadata["best_{}".format(key)] = best_metrics[key]
+    return metadata
+
+
 def save_run_metrics(args, model_name, task_name, final_metrics, checkpoint_dir=None, extra_metadata=None):
     run_output_dir = get_run_output_dir(args, model_name=model_name, task_name=task_name)
     os.makedirs(run_output_dir, exist_ok=True)

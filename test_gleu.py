@@ -9,12 +9,14 @@ from transformers import AdamW, DebertaV2Tokenizer, T5Tokenizer, get_scheduler
 from Debertav2_transformers import DebertaV2Config, DebertaV2ForSequenceClassification
 from T5_transformers import T5Config, T5ForSequenceClassification
 from utils import (
+    build_metric_tracking_metadata,
     maybe_skip_completed_run,
     maybe_dispatch_multi_seed_runs,
     parse_args,
     save_run_metrics,
     seed_fix,
     tf_make_result_path,
+    update_best_metrics,
 )
 
 MODEL_LIST = {
@@ -305,6 +307,11 @@ for name, param in model.named_parameters():
 
 diagnostics = maybe_collect_relative_perturbation()
 latest_metrics = {}
+score_history = []
+best_metrics = None
+best_metric_name = None
+best_metric_value = None
+best_metric_maximize = None
 
 for epoch_idx in range(1, args.epoch + 1):
     model.train()
@@ -356,6 +363,14 @@ for epoch_idx in range(1, args.epoch + 1):
     }
     for metric_name, metric_value in final_score.items():
         latest_metrics["{}_dev_{}".format(task, metric_name)] = metric_value
+    score_history.append(dict(latest_metrics))
+    best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+        best_metrics,
+        best_metric_name,
+        best_metric_value,
+        best_metric_maximize,
+        latest_metrics,
+    )
 
     for name, param in model.named_parameters():
         if "added" in name:
@@ -375,6 +390,12 @@ metrics_path = save_run_metrics(
     extra_metadata={
         "script": "test_gleu.py",
         "diagnostics": diagnostics,
+        **build_metric_tracking_metadata(
+            score_history=score_history,
+            best_metrics=best_metrics,
+            best_metric_name=best_metric_name,
+            best_metric_value=best_metric_value,
+        ),
     },
 )
 print("saved metrics to", metrics_path)

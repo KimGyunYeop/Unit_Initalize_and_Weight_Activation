@@ -23,3 +23,5 @@ rebuttal*
 checkpoint*
 
 *out
+*.csv
+*result*.json

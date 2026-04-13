@@ -9,12 +9,14 @@ from transformers import get_cosine_schedule_with_warmup
 
 from modeling_vit import ViTConfig, ViTForImageClassification
 from utils import (
+    build_metric_tracking_metadata,
     maybe_skip_completed_run,
     maybe_dispatch_multi_seed_runs,
     parse_args,
     save_run_metrics,
     seed_fix,
     tf_make_result_path,
+    update_best_metrics,
 )
 
 MODEL_LIST = {
@@ -245,6 +247,11 @@ step_cnt = 0
 last_train_loss = 0.0
 latest_metrics = {}
 last_eval_step = None
+score_history = []
+best_metrics = None
+best_metric_name = None
+best_metric_value = None
+best_metric_maximize = None
 
 for epoch_idx in range(1, args.epoch + 1):
     model.train()
@@ -279,6 +286,14 @@ for epoch_idx in range(1, args.epoch + 1):
             }
             latest_metrics.update(dev_metrics)
             latest_metrics.update(test_metrics)
+            score_history.append(dict(latest_metrics))
+            best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+                best_metrics,
+                best_metric_name,
+                best_metric_value,
+                best_metric_maximize,
+                latest_metrics,
+            )
 
             if save_path is not None:
                 model_name = "model_" + str(step_cnt) + ".bin"
@@ -300,6 +315,14 @@ if last_eval_step != step_cnt:
     }
     latest_metrics.update(dev_metrics)
     latest_metrics.update(test_metrics)
+    score_history.append(dict(latest_metrics))
+    best_metrics, best_metric_name, best_metric_value, best_metric_maximize = update_best_metrics(
+        best_metrics,
+        best_metric_name,
+        best_metric_value,
+        best_metric_maximize,
+        latest_metrics,
+    )
 
 metrics_path = save_run_metrics(
     args,
@@ -309,6 +332,12 @@ metrics_path = save_run_metrics(
     checkpoint_dir=save_path,
     extra_metadata={
         "script": "test_image_classification.py",
+        **build_metric_tracking_metadata(
+            score_history=score_history,
+            best_metrics=best_metrics,
+            best_metric_name=best_metric_name,
+            best_metric_value=best_metric_value,
+        ),
     },
 )
 print("saved metrics to", metrics_path)
